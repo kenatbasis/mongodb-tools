@@ -10,6 +10,9 @@ import psutil
 from pymongo import Connection
 from pymongo import ReadPreference
 from optparse import OptionParser
+import functools
+
+TABLE_COLS = ["Collection", "Count", "% Size", "DB Size", "Avg Obj Size", "Indexes", "Index Size"]
 
 def compute_signature(index):
     signature = index["ns"]
@@ -50,6 +53,17 @@ def get_cli_options():
                       default="",
                       metavar="PASSWORD",
                       help="Admin password if authentication is enabled")
+    parser.add_option("-s",
+                      dest="sortby",
+                      default="Collection",
+                      choices=TABLE_COLS,
+                      metavar="COLLECTION",
+                      help="Key to sort table by")
+    parser.add_option("-r",
+                      dest="reversesort",
+                      default=False,
+                      action="store_true",
+                      help="Sort descending")
 
     (options, args) = parser.parse_args()
 
@@ -82,6 +96,31 @@ def convert_bytes(bytes):
     else:
         size = '%.2fb' % bytes
     return size
+
+def unconvert_bytes(bytestring):
+    suffix = bytestring[-1]
+    num = float(bytestring[:-1])
+    if suffix == 'T':
+        return num * 1099511627776
+    elif suffix == 'G':
+        return num * 1073741824
+    elif suffix == 'M':
+        return num * 1048576
+    elif suffix == 'K':
+        return num * 1024
+    else:
+        return num
+
+def format_row_for_sort(row):
+    if type(row[0]) == int:
+        return row
+    elif row[0][-1] == '%':
+        row[0] == float(row[0][:-1])
+    elif row[0][-1] in ('b', 'K', 'M', 'G', 'T') \
+        and row[0][-2].isdigit():
+        # hilarious heuristic for detecting this
+        row[0] = unconvert_bytes(row[0]) 
+    return row
 
 def main(options):
     summary_stats = {
@@ -117,7 +156,7 @@ def main(options):
             summary_stats["size"] += stats["size"]
             summary_stats["indexSize"] += stats.get("totalIndexSize", 0)
 
-    x = PrettyTable(["Collection", "Count", "% Size", "DB Size", "Avg Obj Size", "Indexes", "Index Size"])
+    x = PrettyTable(TABLE_COLS)
     x.align["Collection"]  = "l"
     x.align["% Size"]  = "r"
     x.align["Count"]  = "r"
@@ -140,7 +179,16 @@ def main(options):
                        convert_bytes(stat.get("totalIndexSize", 0))])
 
     print
-    print x.get_string(sortby="% Size")
+
+    # pretty table is a pretty shit library, doesnt have separate formatting for
+    # different columns, and the sortby simply rearranges the order of columns
+    # in a row which makes it impossible to apply an intelligent sort_key, which
+    # really should be named 'pre_search_formatter'
+    print x.get_string(
+        sortby=options.sortby,
+        sort_key=format_row_for_sort,
+        reversesort=options.reversesort)
+
     print "Total Documents:", summary_stats["count"]
     print "Total Data Size:", convert_bytes(summary_stats["size"])
     print "Total Index Size:", convert_bytes(summary_stats["indexSize"])
